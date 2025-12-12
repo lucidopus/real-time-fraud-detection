@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Volume2, VolumeX, AlertTriangle, Shield, FileText } from 'lucide-react';
+import { getPostCallAnalysis } from '../api/client';
 
 interface PostCallAnalysisProps {
   scamData: {
@@ -14,9 +15,62 @@ interface PostCallAnalysisProps {
 export function PostCallAnalysis({ scamData, onClose }: PostCallAnalysisProps) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [autoPlayStarted, setAutoPlayStarted] = useState(false);
+  const [explanation, setExplanation] = useState<string>('');
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [audioError, setAudioError] = useState<string | null>(null);
 
-  // BACKEND HOOK: This is where you'd call your LLM to generate the explanation
-  const generateExplanation = () => {
+  // Load analysis from backend on mount
+  useEffect(() => {
+    const loadAnalysis = async () => {
+      setIsLoading(true);
+      try {
+        const result = await getPostCallAnalysis(
+          scamData.transcript,
+          scamData.pattern,
+          scamData.confidence
+        );
+        
+        setExplanation(result.explanation);
+        
+        // Convert base64 audio to blob URL
+        if (result.audio_base64) {
+          try {
+            const audioBytes = Uint8Array.from(atob(result.audio_base64), c => c.charCodeAt(0));
+            const audioBlob = new Blob([audioBytes], { type: 'audio/mpeg' });
+            const url = URL.createObjectURL(audioBlob);
+            setAudioUrl(url);
+          } catch (e) {
+            console.error('Error creating audio URL:', e);
+            setAudioError('Failed to load audio');
+          }
+        } else {
+          setAudioError('No audio available');
+        }
+      } catch (error) {
+        console.error('Error loading analysis:', error);
+        // Fallback to local explanation
+        setExplanation(generateLocalExplanation());
+        setAudioError('Failed to load from server');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadAnalysis();
+  }, [scamData]);
+
+  // Cleanup audio URL on unmount
+  useEffect(() => {
+    return () => {
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  }, [audioUrl]);
+
+  // Fallback local explanation generator
+  const generateLocalExplanation = () => {
     return `This call was flagged as a potential ${scamData.pattern.toLowerCase()} scam with ${scamData.confidence}% confidence.
 
 The system detected several suspicious indicators including phrases like ${scamData.matchedPhrases.slice(0, 3).map(p => `"${p}"`).join(', ')}.
@@ -41,44 +95,66 @@ Remember: legitimate IT, HR, or finance personnel will never ask you to verify p
     return guidance[pattern] || 'Always verify unexpected requests through official channels before providing information or taking action.';
   };
 
-  const explanation = generateExplanation();
-
-  // Text-to-Speech
+  // Play ElevenLabs audio
   const speakExplanation = () => {
-    if ('speechSynthesis' in window) {
-      // Stop any ongoing speech
-      window.speechSynthesis.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(explanation);
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      utterance.volume = 1;
-
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-
-      window.speechSynthesis.speak(utterance);
+    if (audioUrl) {
+      const audio = new Audio(audioUrl);
+      (window as any).currentAudio = audio; // Store reference globally for stopping
+      audio.play();
+      setIsSpeaking(true);
+      
+      audio.onended = () => {
+        setIsSpeaking(false);
+        (window as any).currentAudio = null;
+      };
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        setAudioError('Failed to play audio');
+        (window as any).currentAudio = null;
+      };
+    } else if (!audioError) {
+      // Fallback to browser TTS if no audio URL
+      if ('speechSynthesis' in window && explanation) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(explanation);
+        utterance.rate = 0.9;
+        utterance.pitch = 1;
+        utterance.volume = 1;
+        utterance.onstart = () => setIsSpeaking(true);
+        utterance.onend = () => setIsSpeaking(false);
+        utterance.onerror = () => setIsSpeaking(false);
+        window.speechSynthesis.speak(utterance);
+      }
     }
   };
 
   const stopSpeaking = () => {
+    // Stop ElevenLabs audio
+    if ((window as any).currentAudio) {
+      (window as any).currentAudio.pause();
+      (window as any).currentAudio.currentTime = 0;
+      (window as any).currentAudio = null;
+    }
+    
+    // Stop browser TTS
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      setIsSpeaking(false);
     }
+    
+    setIsSpeaking(false);
   };
 
-  // Auto-play explanation when modal opens
+  // Auto-play explanation when audio is ready
   useEffect(() => {
-    if (!autoPlayStarted) {
+    if (!autoPlayStarted && !isLoading && audioUrl && explanation) {
       const timer = setTimeout(() => {
         speakExplanation();
         setAutoPlayStarted(true);
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [autoPlayStarted]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoPlayStarted, isLoading, audioUrl, explanation]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -138,7 +214,11 @@ Remember: legitimate IT, HR, or finance personnel will never ask you to verify p
           <div className="bg-slate-900/50 border border-slate-700 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-white">Audio Explanation</h3>
-              {isSpeaking ? (
+              {isLoading ? (
+                <div className="text-slate-400 text-sm">Loading audio...</div>
+              ) : audioError ? (
+                <div className="text-yellow-400 text-sm">{audioError}</div>
+              ) : isSpeaking ? (
                 <button
                   onClick={stopSpeaking}
                   className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
@@ -178,9 +258,13 @@ Remember: legitimate IT, HR, or finance personnel will never ask you to verify p
               <h3 className="text-white">Detailed Analysis</h3>
             </div>
             <div className="prose prose-invert max-w-none">
-              <div className="text-slate-300 whitespace-pre-line leading-relaxed">
-                {explanation}
-              </div>
+              {isLoading ? (
+                <div className="text-slate-400">Loading analysis...</div>
+              ) : (
+                <div className="text-slate-300 whitespace-pre-line leading-relaxed">
+                  {explanation || generateLocalExplanation()}
+                </div>
+              )}
             </div>
           </div>
 

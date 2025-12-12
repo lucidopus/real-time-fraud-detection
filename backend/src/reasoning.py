@@ -3,9 +3,9 @@ import loading_redis
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from redis.commands.search.field import TextField, VectorField
-from redis.commands.search.index_definition import IndexDefinition, IndexType
+from redis.commands.search.indexDefinition import IndexDefinition, IndexType
 from redis.commands.search.query import Query
-from elevenlabs.client import ElevenLabs
+from elevenlabs import generate
 from elevenlabs import stream
 import dotenv
 
@@ -24,9 +24,6 @@ class ElevenLabsRedisIntegration:
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         self.index_name = "scam_index"
         self.embedding_dim = 384  # all-MiniLM-L6-v2 dimension
-        
-        # Initialize ElevenLabs client
-        self.elevenlabs = ElevenLabs(api_key=self.api_key)
         
         # Ensure Redis index exists
         self._setup_redis_index()
@@ -190,10 +187,12 @@ If you're unsure, hang up and verify the caller's identity through official chan
         
         try:
             # Generate audio stream using ElevenLabs SDK
-            audio_stream = self.elevenlabs.text_to_speech.stream(
+            audio_stream = generate(
                 text=response_text,
-                voice_id=self.voice_id,
-                model_id=self.model_id
+                voice=self.voice_id,
+                model=self.model_id,
+                api_key=self.api_key,
+                stream=True
             )
             
             return {
