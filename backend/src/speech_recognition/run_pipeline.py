@@ -1,11 +1,19 @@
+# run_transcriber.py
 from live_transcriber import LiveTranscriber
 
-# Create an instance (note the parentheses)
-transcriber = LiveTranscriber(chunk_duration=10)
+def main():
+    # Initialize the transcriber
+    # chunk_duration: seconds per audio chunk
+    # flush_interval: seconds per flush
+    transcriber = LiveTranscriber(chunk_duration=10, flush_interval=20)
+    
+    # Start listening and transcribing
+    transcriber.start()
 
-# Start listening
-transcriber.start()
+    # After stopping, you can get the full transcription in memory
+    full_text = transcriber.get_transcription()
+    print("\nFull transcription collected:")
+    print(full_text)
 
-# After stopping, get full transcription
-full_text = transcriber.get_transcription()
-print("Final transcription:", full_text)
+if __name__ == "__main__":
+    main()
