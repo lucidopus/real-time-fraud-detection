@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Phone, PhoneOff, Shield, Activity, Volume2, VolumeX, Pause, Play } from 'lucide-react';
 import { scamPatterns } from '../data/scamPatterns';
+import { analyzeConversation } from '../api/client';
 
 interface CallScreenProps {
   onCallEnd: (scamData: any) => void;
@@ -19,6 +20,7 @@ export function CallScreen({ onCallEnd }: CallScreenProps) {
   const [riskScore, setRiskScore] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [showHoldPrompt, setShowHoldPrompt] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<string>('');
 
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -106,44 +108,77 @@ export function CallScreen({ onCallEnd }: CallScreenProps) {
     };
   }, [isCallActive, isOnHold]);
 
-  // BACKEND HOOK: Pattern matching analysis
-  const analyzeForScam = (text: string) => {
-    const lowerText = text.toLowerCase();
-    let maxScore = 0;
-    let detectedPattern = null;
-    let matches: string[] = [];
+  // Backend API: Analyze conversation using RAG
+  const analyzeForScam = async (text: string) => {
+    // Update conversation history
+    const updatedHistory = conversationHistory 
+      ? `${conversationHistory}\n${text}`
+      : text;
+    setConversationHistory(updatedHistory);
 
-    for (const pattern of scamPatterns) {
-      let score = 0;
-      let patternMatches: string[] = [];
+    try {
+      // Call backend API for analysis
+      const result = await analyzeConversation(updatedHistory);
+      
+      // Update risk score
+      if (result.risk_score > 0) {
+        setRiskScore(result.risk_score);
+      }
 
-      for (const keyword of pattern.keywords) {
-        if (lowerText.includes(keyword.toLowerCase())) {
-          score += 20;
-          patternMatches.push(keyword);
+      // Update scam detection status
+      if (result.scam_detected && !scamDetected) {
+        setScamDetected(true);
+        // Find matching pattern from local patterns or use the detected pattern name
+        const localPattern = scamPatterns.find(p => 
+          p.name.toLowerCase().includes(result.pattern.toLowerCase()) ||
+          result.pattern.toLowerCase().includes(p.name.toLowerCase())
+        );
+        setDetectedPattern(localPattern || { name: result.pattern, keywords: [], phrases: [] });
+        setMatchedPhrases(result.matched_phrases);
+      } else if (result.scam_detected) {
+        // Update matched phrases if already detected
+        setMatchedPhrases(prev => [...new Set([...prev, ...result.matched_phrases])]);
+      }
+    } catch (error) {
+      console.error('Error analyzing conversation:', error);
+      // Fallback to local pattern matching if API fails
+      const lowerText = text.toLowerCase();
+      let maxScore = 0;
+      let detectedPattern = null;
+      let matches: string[] = [];
+
+      for (const pattern of scamPatterns) {
+        let score = 0;
+        let patternMatches: string[] = [];
+
+        for (const keyword of pattern.keywords) {
+          if (lowerText.includes(keyword.toLowerCase())) {
+            score += 20;
+            patternMatches.push(keyword);
+          }
+        }
+
+        for (const phrase of pattern.phrases) {
+          if (lowerText.includes(phrase.toLowerCase())) {
+            score += 35;
+            patternMatches.push(phrase);
+          }
+        }
+
+        if (score > maxScore) {
+          maxScore = score;
+          detectedPattern = pattern;
+          matches = patternMatches;
         }
       }
 
-      for (const phrase of pattern.phrases) {
-        if (lowerText.includes(phrase.toLowerCase())) {
-          score += 35;
-          patternMatches.push(phrase);
-        }
+      setRiskScore((prev) => Math.min(100, prev + maxScore));
+
+      if (maxScore > 50 && !scamDetected) {
+        setScamDetected(true);
+        setDetectedPattern(detectedPattern);
+        setMatchedPhrases(matches);
       }
-
-      if (score > maxScore) {
-        maxScore = score;
-        detectedPattern = pattern;
-        matches = patternMatches;
-      }
-    }
-
-    setRiskScore((prev) => Math.min(100, prev + maxScore));
-
-    if (maxScore > 50 && !scamDetected) {
-      setScamDetected(true);
-      setDetectedPattern(detectedPattern);
-      setMatchedPhrases(matches);
     }
   };
 
@@ -157,6 +192,7 @@ export function CallScreen({ onCallEnd }: CallScreenProps) {
     setMatchedPhrases([]);
     setRiskScore(0);
     setErrorMessage('');
+    setConversationHistory('');
 
     if (recognitionRef.current) {
       try {
@@ -184,7 +220,7 @@ export function CallScreen({ onCallEnd }: CallScreenProps) {
       onCallEnd({
         pattern: detectedPattern.name,
         confidence: riskScore,
-        transcript: transcript.map((t) => t.text).join(' '),
+        transcript: conversationHistory || transcript.map((t) => t.text).join(' '),
         matchedPhrases,
       });
     }
